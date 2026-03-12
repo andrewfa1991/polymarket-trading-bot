@@ -342,7 +342,7 @@ class BaseStrategy(ABC):
             self.log(f"Order failed: {result.message}", "error")
             return False
 
-    async def execute_sell(self, position: Position, current_price: float) -> bool:
+    async def execute_sell(self, position, current_price: float) -> bool:
         """
         Execute sell order to close position.
 
