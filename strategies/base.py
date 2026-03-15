@@ -129,23 +129,10 @@ class BaseStrategy(ABC):
         """Get cached open orders."""
         return self._cached_orders
 
-    def _refresh_orders_sync(self) -> List[dict]:
-        """Refresh open orders synchronously (called via to_thread)."""
-        try:
-            import asyncio
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                return loop.run_until_complete(self.bot.get_open_orders())
-            finally:
-                loop.close()
-        except Exception:
-            return []
-
     async def _do_order_refresh(self) -> None:
         """Background task to refresh orders without blocking."""
         try:
-            orders = await asyncio.to_thread(self._refresh_orders_sync)
+            orders = await self.bot.get_open_orders()
             self._cached_orders = orders
         except Exception:
             pass
