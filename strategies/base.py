@@ -29,7 +29,7 @@ from typing import Optional, Dict, List
 from lib.console import LogBuffer, log
 from lib.market_manager import MarketManager, MarketInfo
 from lib.price_tracker import PriceTracker
-from lib.position_manager import PositionManager
+from lib.position_manager import PositionManager, Position
 from src.bot import TradingBot
 from src.websocket_client import OrderbookSnapshot
 
@@ -337,7 +337,7 @@ class BaseStrategy(ABC):
             self.log(f"Order failed: {result.message}", "error")
             return False
 
-    async def execute_sell(self, position, current_price: float) -> bool:
+    async def execute_sell(self, position: "Position", current_price: float) -> bool:
         """
         Execute sell order to close position.
 

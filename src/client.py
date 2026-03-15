@@ -62,6 +62,7 @@ class ApiCredentials:
     api_key: str
     secret: str
     passphrase: str
+    signer_address: str = ""
 
     @classmethod
     def load(cls, filepath: str) -> "ApiCredentials":
@@ -72,6 +73,7 @@ class ApiCredentials:
             api_key=data.get("apiKey", ""),
             secret=data.get("secret", ""),
             passphrase=data.get("passphrase", ""),
+            signer_address=data.get("signerAddress", ""),
         )
 
     def is_valid(self) -> bool:
@@ -282,7 +284,7 @@ class ClobClient(ApiClient):
                 ).hexdigest()
 
             headers.update({
-                "POLY_ADDRESS": self.funder,
+                "POLY_ADDRESS": self.api_creds.signer_address or self.funder,
                 "POLY_API_KEY": self.api_creds.api_key,
                 "POLY_TIMESTAMP": timestamp,
                 "POLY_PASSPHRASE": self.api_creds.passphrase,
@@ -324,6 +326,7 @@ class ClobClient(ApiClient):
             api_key=response.get("apiKey", ""),
             secret=response.get("secret", ""),
             passphrase=response.get("passphrase", ""),
+            signer_address=signer.address,
         )
 
     def create_api_key(self, signer: "OrderSigner", nonce: int = 0) -> ApiCredentials:
@@ -358,6 +361,7 @@ class ClobClient(ApiClient):
             api_key=response.get("apiKey", ""),
             secret=response.get("secret", ""),
             passphrase=response.get("passphrase", ""),
+            signer_address=signer.address,
         )
 
     def create_or_derive_api_key(self, signer: "OrderSigner", nonce: int = 0) -> ApiCredentials:

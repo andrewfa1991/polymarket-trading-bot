@@ -70,33 +70,38 @@ async def test_websocket():
             async for message in ws:
                 msg_count += 1
                 data = json.loads(message)
-                event_type = data.get("event_type", "unknown")
+                
+                # Handle array of messages
+                messages = data if isinstance(data, list) else [data]
+                
+                for item in messages:
+                    event_type = item.get("event_type", "unknown")
 
-                if event_type == "book":
-                    asset_id = data.get("asset_id", "")[:20]
-                    bids = data.get("bids", [])
-                    asks = data.get("asks", [])
-                    best_bid = bids[0]["price"] if bids else "N/A"
-                    best_ask = asks[0]["price"] if asks else "N/A"
-                    print(f"[{msg_count}] BOOK: asset={asset_id}... bid={best_bid} ask={best_ask}")
+                    if event_type == "book":
+                        asset_id = item.get("asset_id", "")[:20]
+                        bids = item.get("bids", [])
+                        asks = item.get("asks", [])
+                        best_bid = bids[0]["price"] if bids else "N/A"
+                        best_ask = asks[0]["price"] if asks else "N/A"
+                        print(f"[{msg_count}] BOOK: asset={asset_id}... bid={best_bid} ask={best_ask}")
 
-                elif event_type == "price_change":
-                    changes = data.get("price_changes", [])
-                    for change in changes:
-                        side = change.get("side", "?")
-                        price = change.get("price", "?")
-                        best_bid = change.get("best_bid", "?")
-                        best_ask = change.get("best_ask", "?")
-                        print(f"[{msg_count}] PRICE_CHANGE: side={side} price={price} bid={best_bid} ask={best_ask}")
+                    elif event_type == "price_change":
+                        changes = item.get("price_changes", [])
+                        for change in changes:
+                            side = change.get("side", "?")
+                            price = change.get("price", "?")
+                            best_bid = change.get("best_bid", "?")
+                            best_ask = change.get("best_ask", "?")
+                            print(f"[{msg_count}] PRICE_CHANGE: side={side} price={price} bid={best_bid} ask={best_ask}")
 
-                elif event_type == "last_trade_price":
-                    price = data.get("price", "?")
-                    side = data.get("side", "?")
-                    size = data.get("size", "?")
-                    print(f"[{msg_count}] TRADE: side={side} price={price} size={size}")
+                    elif event_type == "last_trade_price":
+                        price = item.get("price", "?")
+                        side = item.get("side", "?")
+                        size = item.get("size", "?")
+                        print(f"[{msg_count}] TRADE: side={side} price={price} size={size}")
 
-                else:
-                    print(f"[{msg_count}] {event_type}: {str(data)[:100]}")
+                    else:
+                        print(f"[{msg_count}] {event_type}: {str(item)[:100]}")
 
         except KeyboardInterrupt:
             print(f"\n\nReceived {msg_count} messages total")
