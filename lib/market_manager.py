@@ -324,7 +324,7 @@ class MarketManager:
         if not self.current_market:
             return False
 
-        self.ws = MarketWebSocket()
+        self.ws = MarketWebSocket(reconnect_interval=0.5)
 
         @self.ws.on_book
         async def handle_book(snapshot: OrderbookSnapshot):  # pyright: ignore[reportUnusedFunction]
@@ -369,7 +369,19 @@ class MarketManager:
     async def _market_check_loop(self) -> None:
         """Periodically check for market changes."""
         while self._running:
-            await asyncio.sleep(self.market_check_interval)
+            # Smart sleep: if we know exactly when the current market ends,
+            # wake up 1 second after that instead of waiting the full interval.
+            # This ensures we switch to the new market within ~1 second of open,
+            # rather than up to market_check_interval seconds late.
+            sleep_time = self.market_check_interval
+            if self.current_market:
+                mins, secs = self.current_market.get_countdown()
+                if mins >= 0:  # countdown is valid
+                    seconds_remaining = mins * 60 + secs
+                    if 0 < seconds_remaining < self.market_check_interval:
+                        # Wake up 1 second after this market expires
+                        sleep_time = seconds_remaining + 1.0
+            await asyncio.sleep(sleep_time)
 
             if not self._running:
                 break
