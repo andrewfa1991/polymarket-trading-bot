@@ -95,5 +95,6 @@ class FlashCrashStrategy(BaseStrategy):
             lines.append("-" * 80)
             for msg in self._log_buffer.get_messages():
                 lines.append(f"  {msg}")
+            self._log_buffer.clear()
 
         print("\033[H\033[J" + "\n".join(lines), flush=True)
