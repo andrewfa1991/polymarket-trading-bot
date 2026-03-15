@@ -1,30 +1,32 @@
 """
 Flash Crash Strategy - Volatility Trading for 15-Minute Markets
-Düzeltmeler: 
-1. SyntaxError (Line 100) giderildi.
-2. Otomatik WebSocket Yenileme (Pazar rollover) eklendi.
-3. Railway Log Sınırı (Rate Limit) koruması eklendi.
+Düzeltmeler:
+1. SyntaxError (lines = []) giderildi.
+2. _get_countdown_str() yerine current_market.get_countdown_str() kullanıldı.
+3. render_status() içindeki orphan kod kaldırıldı (MarketManager zaten otomatik yapar).
+4. Railway Log Sınırı (Rate Limit) koruması mevcut.
 """
 
-import asyncio
 import time
 from dataclasses import dataclass
 from typing import Dict
 
-from lib.console import Colors, format_countdown
+from lib.console import Colors
 from strategies.base import BaseStrategy, StrategyConfig
 from src.bot import TradingBot
 from src.websocket_client import OrderbookSnapshot
+
 
 @dataclass
 class FlashCrashConfig(StrategyConfig):
     """Flash crash strateji yapılandırması."""
     drop_threshold: float = 0.30
 
+
 class FlashCrashStrategy(BaseStrategy):
     """
     Piyasayı WebSocket üzerinden canlı izler.
-    Pazar değiştiğinde otomatik olarak yeni Token ID'lerini dinlemeye başlar.
+    MarketManager otomatik pazar değişikliğini ve WebSocket yenilemeyi yönetir.
     """
 
     def __init__(self, bot: TradingBot, config: FlashCrashConfig):
@@ -32,11 +34,11 @@ class FlashCrashStrategy(BaseStrategy):
         self.flash_config = config
         self.prices.drop_threshold = config.drop_threshold
         # Railway log sınırına takılmamak için zamanlayıcı
-        self.last_render_time = 0 
+        self.last_render_time = 0
 
     async def on_book_update(self, snapshot: OrderbookSnapshot) -> None:
         """Fiyat kaydı temel sınıfta yapılır."""
-        pass  
+        pass
 
     async def on_tick(self, prices: Dict[str, float]) -> None:
         """Her fiyat hareketinde çöküş kontrolü yapar."""
@@ -61,9 +63,9 @@ class FlashCrashStrategy(BaseStrategy):
             return
         self.last_render_time = current_time
 
-        lines =
+        lines = []
         ws_status = f"{Colors.GREEN}WS{Colors.RESET}" if self.is_connected else f"{Colors.RED}REST{Colors.RESET}"
-        countdown = self._get_countdown_str()
+        countdown = self.current_market.get_countdown_str() if self.current_market else "--:--"
         stats = self.positions.get_stats()
 
         lines.append(f"{Colors.BOLD}{'='*80}{Colors.RESET}")
@@ -88,20 +90,10 @@ class FlashCrashStrategy(BaseStrategy):
 
         lines.append("-" * 80)
         lines.append(f"Geçmiş Veri: UP={self.prices.get_history_count('up')}/100 | Eşik: {self.flash_config.drop_threshold:.2f}")
-        
+
         if self._log_buffer.messages:
             lines.append("-" * 80)
             for msg in self._log_buffer.get_messages():
                 lines.append(f"  {msg}")
 
-        output = "\033
-        market_info = self.bot.get_market_info(self.config.coin)
-        if market_info:
-            new_up_id = market_info['token_ids']['up']
-            new_down_id = market_info['token_ids']['down']
-            self.token_ids = {"up": new_up_id, "down": new_down_id}
-            
-            # WebSocket sunucusuna yeni ID'leri bildir (replace=True eskiyi siler) 
-            if hasattr(self.bot, 'ws') and self.bot.ws:
-                await self.bot.ws.subscribe([new_up_id, new_down_id], replace=True)
-                self.log(f"ABONELİK YENİLENDİ: {new_up_id}", "info")
+        print("\033[H\033[J" + "\n".join(lines), flush=True)
