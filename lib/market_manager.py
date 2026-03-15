@@ -397,8 +397,20 @@ class MarketManager:
             if not self._should_switch_market(old_market, market):
                 continue
 
-            # Market changed - resubscribe to new tokens
-            await self.ws.subscribe(list(new_tokens), replace=True)
+            # Market changed - update subscriptions and force reconnect.
+            # Calling subscribe(replace=True) on an existing WS connection
+            # does NOT reliably trigger fresh book snapshots from Polymarket.
+            # A full reconnect guarantees Polymarket sends initial book events.
+            self.ws._subscribed_assets.clear()
+            self.ws._subscribed_assets.update(new_tokens)
+            self.ws._orderbooks.clear()
+            # Close the underlying connection; ws.run(auto_reconnect=True)
+            # will reconnect and re-subscribe automatically.
+            if self.ws._ws is not None:
+                try:
+                    await self.ws._ws.close()
+                except Exception:
+                    pass
             self._update_current_market(market)
 
             # Fire market change callbacks in main thread
