@@ -140,7 +140,15 @@ class BaseStrategy(ABC):
             self._order_refresh_task = None
 
     def _maybe_refresh_orders(self) -> None:
-        """Schedule order refresh if interval has passed (fire-and-forget)."""
+        """Schedule order refresh if interval has passed (fire-and-forget).
+
+        Only refreshes if trades have been made — avoids unnecessary API calls
+        when there are no open orders to track.
+        """
+        # No point fetching orders if we haven't placed any trades yet
+        if self.positions.trades_opened == 0:
+            return
+
         now = time.time()
         if now - self._last_order_refresh > self.config.order_refresh_interval:
             # Don't start new refresh if one is already running
