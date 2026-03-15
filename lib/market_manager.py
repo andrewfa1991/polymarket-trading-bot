@@ -170,6 +170,7 @@ class MarketManager:
 
         # State
         self.current_market: Optional[MarketInfo] = None
+        self._next_market: Optional[MarketInfo] = None  # pre-subscribed next market
         self._previous_slug: Optional[str] = None
         self._running = False
         self._ws_connected = False
@@ -367,37 +368,63 @@ class MarketManager:
             await self.ws.run(auto_reconnect=True)
 
     async def _market_check_loop(self) -> None:
-        """Periodically check for market changes."""
+        """
+        Periodically check for market changes.
+
+        Uses pre-subscription to achieve near-zero blind spot at transitions:
+        - 60 seconds before market ends: discovers next market, reconnects WS
+          subscribing to BOTH current and next tokens simultaneously.
+          Polymarket sends initial book snapshots for both right away.
+          (~0.5s disruption at T-60s, far from the critical boundary.)
+        - At market boundary (T+1s): atomically flips current_market pointer.
+          No WS disruption — data was already flowing for the new market.
+        - Fallback: if next market not yet indexed on Gamma, reverts to the
+          force-reconnect approach (same as before).
+        """
+        PRE_SUBSCRIBE_THRESHOLD = 60  # seconds before market end to pre-subscribe
+
         while self._running:
-            # Smart sleep: if we know exactly when the current market ends,
-            # wake up 1 second after that instead of waiting the full interval.
-            # This ensures we switch to the new market within ~1 second of open,
-            # rather than up to market_check_interval seconds late.
+            # ── Smart sleep ───────────────────────────────────────────────────
             sleep_time = self.market_check_interval
             if self.current_market:
                 mins, secs = self.current_market.get_countdown()
-                if mins >= 0:  # countdown is valid
+                if mins >= 0:
                     seconds_remaining = mins * 60 + secs
-                    if 0 < seconds_remaining < self.market_check_interval:
-                        # Wake up 1 second after this market expires
+                    if self._next_market is not None:
+                        # Pre-subscription done: wake up right after market ends
                         sleep_time = seconds_remaining + 1.0
-            await asyncio.sleep(sleep_time)
+                    elif 0 < seconds_remaining - PRE_SUBSCRIBE_THRESHOLD < self.market_check_interval:
+                        # Wake up exactly at the pre-subscribe window
+                        sleep_time = seconds_remaining - PRE_SUBSCRIBE_THRESHOLD
+                    elif 0 < seconds_remaining < self.market_check_interval:
+                        # Market ends before next normal poll: wake after it ends
+                        sleep_time = seconds_remaining + 1.0
+            await asyncio.sleep(max(0.5, sleep_time))
 
             if not self._running:
                 break
 
+            # ── Pre-subscription opportunity ──────────────────────────────────
+            if self.auto_switch_market and self.ws and self._next_market is None and self.current_market:
+                mins, secs = self.current_market.get_countdown()
+                if mins >= 0:
+                    seconds_remaining = mins * 60 + secs
+                    if 0 < seconds_remaining <= PRE_SUBSCRIBE_THRESHOLD:
+                        await self._try_pre_subscribe()
+
+            # ── Discover current/new market ───────────────────────────────────
             old_market = self.current_market
             old_tokens = set(old_market.token_ids.values()) if old_market else set()
             old_slug = old_market.slug if old_market else None
 
-            # Run synchronous HTTP call in thread pool to avoid blocking
             market = await asyncio.to_thread(self.discover_market, update_state=False)
 
             if not market:
                 continue
 
-            # Check if market changed and resubscribe
             new_tokens = set(market.token_ids.values())
+
+            # No change
             if new_tokens == old_tokens:
                 self._update_current_market(market)
                 continue
@@ -409,29 +436,99 @@ class MarketManager:
             if not self._should_switch_market(old_market, market):
                 continue
 
-            # Market changed - update subscriptions and force reconnect.
-            # Calling subscribe(replace=True) on an existing WS connection
-            # does NOT reliably trigger fresh book snapshots from Polymarket.
-            # A full reconnect guarantees Polymarket sends initial book events.
-            self.ws._subscribed_assets.clear()
-            self.ws._subscribed_assets.update(new_tokens)
-            self.ws._orderbooks.clear()
-            # Close the underlying connection; ws.run(auto_reconnect=True)
-            # will reconnect and re-subscribe automatically.
-            if self.ws._ws is not None:
-                try:
-                    await self.ws._ws.close()
-                except Exception:
-                    pass
-            self._update_current_market(market)
+            # ── Market changed ────────────────────────────────────────────────
+            if self._next_market and set(self._next_market.token_ids.values()) == new_tokens:
+                # Pre-subscription succeeded! New market data already flowing.
+                # Just flip the pointer and unsubscribe old tokens — no reconnect.
+                self._next_market = None
+                self._update_current_market(market)
+                if self.ws:
+                    for token_id in old_tokens:
+                        self.ws._orderbooks.pop(token_id, None)
+                        self.ws._subscribed_assets.discard(token_id)
+            else:
+                # Fallback: pre-subscription missed or returned unexpected market.
+                # Force-reconnect with new tokens only (same as the previous approach).
+                self._next_market = None
+                self.ws._subscribed_assets.clear()
+                self.ws._subscribed_assets.update(new_tokens)
+                self.ws._orderbooks.clear()
+                if self.ws._ws is not None:
+                    try:
+                        await self.ws._ws.close()
+                    except Exception:
+                        pass
+                self._update_current_market(market)
 
-            # Fire market change callbacks in main thread
+            # Fire market change callbacks
             if old_slug and old_slug != market.slug:
                 for callback in self._on_market_change_callbacks:
                     try:
                         callback(old_slug, market.slug)
                     except Exception:
                         pass
+
+    async def _try_pre_subscribe(self) -> None:
+        """
+        Attempt to pre-subscribe to the next 15-minute market ~60s before
+        the current one ends.
+
+        Reconnects the WebSocket subscribing to BOTH current and next market
+        tokens so Polymarket sends initial book snapshots for both upfront.
+        At the market boundary only a pointer flip is needed — zero blind spot.
+
+        If the next market is not yet indexed on Gamma, silently returns.
+        The _market_check_loop will fall back to a standard force-reconnect.
+        """
+        if not self.current_market or not self.ws:
+            return
+
+        try:
+            next_raw = await asyncio.to_thread(
+                self.gamma.get_next_15m_market, self.coin
+            )
+        except Exception:
+            return
+
+        if not next_raw:
+            return  # Not indexed yet — will retry on next loop iteration
+
+        try:
+            token_ids = self.gamma.parse_token_ids(next_raw)
+            prices = self.gamma.parse_prices(next_raw)
+            next_market = MarketInfo(
+                slug=next_raw.get("slug", ""),
+                question=next_raw.get("question", ""),
+                end_date=next_raw.get("endDate", ""),
+                token_ids=token_ids,
+                prices=prices,
+                accepting_orders=next_raw.get("acceptingOrders", False),
+            )
+        except Exception:
+            return
+
+        next_tokens = set(next_market.token_ids.values())
+        current_tokens = set(self.current_market.token_ids.values())
+
+        if not next_tokens or next_tokens == current_tokens:
+            return  # Same market or bad data
+
+        if not self._should_switch_market(self.current_market, next_market):
+            return
+
+        # Reconnect WS with BOTH current + next tokens combined.
+        # The ~0.5s reconnect disruption happens now (T-60s), not at T+0.
+        combined_tokens = current_tokens | next_tokens
+        self.ws._subscribed_assets.clear()
+        self.ws._subscribed_assets.update(combined_tokens)
+        self.ws._orderbooks.clear()
+        if self.ws._ws is not None:
+            try:
+                await self.ws._ws.close()
+            except Exception:
+                pass
+
+        self._next_market = next_market
 
     async def start(self) -> bool:
         """
@@ -486,6 +583,7 @@ class MarketManager:
             self.ws = None
 
         self._ws_connected = False
+        self._next_market = None
 
     async def wait_for_data(self, timeout: float = 5.0) -> bool:
         """
